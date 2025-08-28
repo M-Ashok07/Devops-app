@@ -1,66 +1,55 @@
+
 pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USER = 'ashok948'
-        IMAGE_TAG = "${env.BRANCH_NAME}"   // dev, prod, etc.
-        EC2_HOST = 'root@43.205.255.0'     // root login
+        EC2_IP = '43.205.255.0'
     }
 
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                git branch: "${env.BRANCH_NAME ?: 'dev'}", url: 'https://github.com/M-Ashok07/Devops-app.git'
             }
         }
 
         stage('Build Docker Image') {
             steps {
                 script {
-                    sh """
-                        docker build -t ${DOCKERHUB_USER}/${IMAGE_TAG}:latest .
-                    """
+                    def imageTag = env.BRANCH_NAME == 'dev' ? 'dev' : 'prod'
+                    sh "docker build -t ashok948/${imageTag}:latest ."
                 }
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
-                                                 usernameVariable: 'DOCKERHUB_USER',
-                                                 passwordVariable: 'DOCKERHUB_PASS')]) {
-                    sh """
-                        echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin
-                        docker push ${DOCKERHUB_USER}/${IMAGE_TAG}:latest
-                    """
-                }
-            }
-        }
-
-        stage('Deploy to EC2') {
-            steps {
-                sshagent(['ssh login-aws']) {
-                    withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials',
-                                                     usernameVariable: 'DOCKERHUB_USER',
-                                                     passwordVariable: 'DOCKERHUB_PASS')]) {
-                        sh """
-                            ssh -o StrictHostKeyChecking=no ${EC2_HOST} '
-                                echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin &&
-                                docker pull ${DOCKERHUB_USER}/${IMAGE_TAG}:latest &&
-                                (docker stop ${IMAGE_TAG}-app || true) &&
-                                (docker rm ${IMAGE_TAG}-app || true) &&
-                                docker run -d -p 80:80 --name ${IMAGE_TAG}-app ${DOCKERHUB_USER}/${IMAGE_TAG}:latest
-                            '
-                        """
+                withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_PASS')]) {
+                    script {
+                        def imageTag = env.BRANCH_NAME == 'dev' ? 'dev' : 'prod'
+                        sh "echo $DOCKERHUB_PASS | docker login -u $DOCKERHUB_USER --password-stdin"
+                        sh "docker push $DOCKERHUB_USER/${imageTag}:latest"
                     }
                 }
             }
         }
-    }
 
-    post {
-        always {
-            cleanWs()
+        stage('Deploy to AWS') {
+            steps {
+                sshagent(['ec2-ssh-key-id']) {
+                    script {
+                        def imageTag = env.BRANCH_NAME == 'dev' ? 'dev' : 'prod'
+                        sh """
+                        ssh -o StrictHostKeyChecking=no ubuntu@${EC2_IP} '
+                            docker pull ashok948/${imageTag}:latest &&
+                            docker stop app || true &&
+                            docker rm app || true &&
+                            docker run -d -p 80:80 --name app ashok948/${imageTag}:latest
+                        '
+                        """
+                    }
+                }
+            }
         }
     }
 }
